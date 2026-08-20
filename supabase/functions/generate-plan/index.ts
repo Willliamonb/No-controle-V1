@@ -1,102 +1,92 @@
 // supabase/functions/generate-plan/index.ts
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-  "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
-};
+import { createClient } from "jsr:@supabase/supabase-js@2";
+import { corsHeaders } from "../_shared/cors.ts";
 
-// Função para buscar dados do usuário no Supabase
-async function fetchUserData(supabaseClient: any, userId: string) {
-  console.log("🔍 Buscando dados do usuário:", userId);
-  
-  // Buscar perfil
-  const { data: profile } = await supabaseClient
-    .from("profiles")
-    .select("*")
-    .eq("id", userId)
-    .single();
+interface Debt {
+  id: string;
+  creditor: string;
+  total_amount: number;
+  remaining_amount: number;
+  interest_rate: number;
+  due_day: number;
+  status: string;
+}
 
-  // Buscar dívidas ativas
-  const { data: debts } = await supabaseClient
-    .from("debts")
-    .select("*")
-    .eq("user_id", userId)
-    .neq("status", "quitada");
-
-  // Buscar rendas
-  const { data: incomes } = await supabaseClient
-    .from("incomes")
-    .select("*")
-    .eq("user_id", userId);
-
-  // Buscar despesas
-  const { data: expenses } = await supabaseClient
-    .from("expenses")
-    .select("*")
-    .eq("user_id", userId);
-
-  // Calcular totais
-  const totalDebt = debts?.reduce((sum, d) => sum + (d.remaining_amount || d.total_amount), 0) || 0;
-  const totalIncome = incomes?.reduce((sum, i) => sum + i.amount, 0) || 0;
-  const totalExpense = expenses?.reduce((sum, e) => sum + e.amount, 0) || 0;
-  const monthlyAvailable = totalIncome - totalExpense;
-
-  return {
-    profile,
-    debts: debts || [],
-    incomes: incomes || [],
-    expenses: expenses || [],
-    totalDebt,
-    totalIncome,
-    totalExpense,
-    monthlyAvailable,
-    debtsCount: debts?.length || 0,
-  };
+interface Income {
+  id: string;
+  description: string;
+  amount: number;
+  received_day: number;
 }
 
 Deno.serve(async (req) => {
-  // CORS
+  // CORS para requisições do app
   if (req.method === "OPTIONS") {
     return new Response("ok", { headers: corsHeaders });
   }
 
   try {
     const { userId } = await req.json();
-    console.log("📊 Gerando plano para:", userId);
-
+    
     if (!userId) {
       throw new Error("userId é obrigatório");
     }
 
-    // Criar cliente Supabase
+    // Criar cliente Supabase com a chave de serviço
     const supabaseClient = createClient(
       Deno.env.get("SUPABASE_URL") ?? "",
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") ?? ""
     );
 
     // Buscar dados do usuário
-    const userData = await fetchUserData(supabaseClient, userId);
-    console.log("📊 Dados do usuário:", {
-      totalDebt: userData.totalDebt,
-      totalIncome: userData.totalIncome,
-      monthlyAvailable: userData.monthlyAvailable,
-      debtsCount: userData.debtsCount,
-    });
+    console.log("🔍 Buscando dados do usuário:", userId);
+    
+    // Buscar perfil
+    const { data: profile } = await supabaseClient
+      .from("profiles")
+      .select("*")
+      .eq("id", userId)
+      .single();
+
+    // Buscar dívidas ativas
+    const { data: debts } = await supabaseClient
+      .from("debts")
+      .select("*")
+      .eq("user_id", userId)
+      .neq("status", "quitada");
+
+    // Buscar rendas
+    const { data: incomes } = await supabaseClient
+      .from("incomes")
+      .select("*")
+      .eq("user_id", userId);
+
+    // Buscar despesas
+    const { data: expenses } = await supabaseClient
+      .from("expenses")
+      .select("*")
+      .eq("user_id", userId);
+
+    // Calcular totais
+    const totalDebt = debts?.reduce((sum, d) => sum + (d.remaining_amount || d.total_amount), 0) || 0;
+    const totalIncome = incomes?.reduce((sum, i) => sum + i.amount, 0) || 0;
+    const totalExpense = expenses?.reduce((sum, e) => sum + e.amount, 0) || 0;
+    const monthlyAvailable = totalIncome - totalExpense;
 
     // Construir prompt para a IA
     const systemPrompt = `Você é o "No Controle", um assistente financeiro que ajuda pessoas a saírem das dívidas.
 
 ANALISE ESTA SITUAÇÃO FINANCEIRA:
 
-USUÁRIO: ${userData.profile?.full_name || "Usuário"}
-RENDA MENSAL TOTAL: R$ ${userData.totalIncome.toFixed(2)}
-DESPESAS MENSAIS: R$ ${userData.totalExpense.toFixed(2)}
-DISPONÍVEL POR MÊS: R$ ${userData.monthlyAvailable.toFixed(2)}
-TOTAL DE DÍVIDAS: R$ ${userData.totalDebt.toFixed(2)}
-QUANTIDADE DE DÍVIDAS: ${userData.debtsCount}
+USUÁRIO: ${profile?.full_name || "Usuário"}
+RENDA MENSAL TOTAL: R$ ${totalIncome.toFixed(2)}
+DESPESAS MENSAIS: R$ ${totalExpense.toFixed(2)}
+DISPONÍVEL POR MÊS: R$ ${monthlyAvailable.toFixed(2)}
+TOTAL DE DÍVIDAS: R$ ${totalDebt.toFixed(2)}
+QUANTIDADE DE DÍVIDAS: ${debts?.length || 0}
 
 DÍVIDAS DETALHADAS:
-${userData.debts.map((d: any) => `
+${debts?.map((d: Debt) => `
 - ${d.creditor}: R$ ${(d.remaining_amount || d.total_amount).toFixed(2)}
   Taxa de juros: ${d.interest_rate || 0}%
   Status: ${d.status}
@@ -107,7 +97,7 @@ BASEADO NESTES DADOS, CRIE UM PLANO PERSONALIZADO EM FORMATO JSON:
 {
   "analise": {
     "situacao": "desafiadora" | "controlavel" | "tranquila",
-    "mensagem": "Uma mensagem acolhedora sobre a situação do usuário"
+    "mensagem": "Uma mensagem acolhedora sobre a situação"
   },
   "plano": {
     "prioridades": [
@@ -168,7 +158,7 @@ REGRAS:
         temperature: 0.7,
         messages: [
           { role: "system", content: systemPrompt },
-          { role: "user", content: `Meu nome é ${userData.profile?.full_name || "Usuário"}. Me ajude a sair das dívidas!` }
+          { role: "user", content: `Meu nome é ${profile?.full_name || "Usuário"}. Me ajude a sair das dívidas!` }
         ],
         response_format: { type: "json_object" }
       }),
@@ -177,33 +167,26 @@ REGRAS:
     const aiResult = await response.json();
     
     if (!response.ok) {
-      console.error("❌ Erro na OpenAI:", aiResult);
+      console.error("Erro na OpenAI:", aiResult);
       throw new Error(aiResult.error?.message || "Erro ao chamar OpenAI");
     }
 
-    // Parse do JSON retornado pela IA
-    let plano;
-    try {
-      plano = JSON.parse(aiResult.choices[0].message.content);
-    } catch (parseError) {
-      console.error("❌ Erro ao parsear JSON da IA:", parseError);
-      throw new Error("Resposta da IA em formato inválido");
-    }
+    const plano = JSON.parse(aiResult.choices[0].message.content);
 
     // Salvar o plano no banco
     const { error: planError } = await supabaseClient
       .from("financial_plans")
       .insert({
         user_id: userId,
-        monthly_available: userData.monthlyAvailable,
-        priority_order: plano.plano?.prioridades || [],
-        estimated_payoff_months: plano.plano?.mesesParaQuitar || 0,
+        monthly_available: monthlyAvailable,
+        priority_order: plano.plano.prioridades || [],
+        estimated_payoff_months: plano.plano.mesesParaQuitar || 0,
         tips: plano.dicas || [],
         raw_summary: JSON.stringify(plano)
       });
 
     if (planError) {
-      console.error("❌ Erro ao salvar plano:", planError);
+      console.error("Erro ao salvar plano:", planError);
     }
 
     console.log("✅ Plano gerado com sucesso!");
@@ -211,13 +194,13 @@ REGRAS:
     return new Response(
       JSON.stringify({
         success: true,
-        plano: plano,
+        plano,
         resumo: {
-          totalDebt: userData.totalDebt,
-          monthlyAvailable: userData.monthlyAvailable,
-          totalIncome: userData.totalIncome,
-          totalExpense: userData.totalExpense,
-          debtsCount: userData.debtsCount
+          totalDebt,
+          monthlyAvailable,
+          totalIncome,
+          totalExpense,
+          debtsCount: debts?.length || 0
         }
       }),
       {
